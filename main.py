@@ -1,67 +1,80 @@
 import os
 
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import Runnable
+from langchain.memory import ConversationBufferWindowMemory
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_openai import ChatOpenAI
 
-# credentials
+# setting up credentials and configs
 MODEL = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 TOGETHER_API_BASE = os.getenv("OPENAI_API_BASE", "https://api.together.xyz/v1")
-TOGETHER_API_KEY  = os.getenv("TOGETHER_API_KEY")
+TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
+
 if not TOGETHER_API_KEY:
     raise ValueError("Please set the TOGETHER_API_KEY environment variable.")
 
-# creating two llm instances one for classification and another for generation of email
-llm_classification = ChatOpenAI(openai_api_key=TOGETHER_API_KEY,
-                         openai_api_base=TOGETHER_API_BASE,
-                         model_name=MODEL,
-                         temperature=0.0)
+# main llm initiation with credentials
+llm = ChatOpenAI(
+    openai_api_key=TOGETHER_API_KEY,
+    openai_api_base=TOGETHER_API_BASE,
+    model_name=MODEL,
+    temperature=0.4
+)
 
-llm_generative = ChatOpenAI(openai_api_key=TOGETHER_API_KEY,
-                         openai_api_base=TOGETHER_API_BASE,
-                         model_name=MODEL,
-                         temperature=0.7)
-
-# prompt template for Classification part & Runnable
-classification_template = ChatPromptTemplate.from_messages([
-    ("system",
-     "You are an email assistant classifier. "
-     "Given a short, imperfect prompt, identify:\n"
-     "1) Email type: one of [leave_request, follow_up, meeting_schedule, apology, complaint, other]\n"
-     "2) Tone: one of [formal, informal, neutral]\n"
-     "3) Key slots: Date, Recipient Name, Subject Matter (use placeholders if missing)\n"
-     "Respond in JSON with keys: type, tone, slots."
-    ),
+# prompt template
+email_prompt = ChatPromptTemplate.from_messages([
+    ("system", 
+    """You are a smart, reactive email assistant for non-native English speakers.
+        - **STRICTLY** : Never generate an email unless you have: recipient name, reason, and timeframe (days or dates).
+        - Ask one short follow-up question at a time with no extra text.
+        - Remember user responses across turns; don’t repeat questions.
+        - Only write the email when all info is available or the user explicitly asks.
+        - Adjust tone based on input: polite (requests), apologetic (apologies), follow-up (reminders), or neutral (unclear).
+        - Match formal/informal style to user language.
+        - Include Subject, Greeting, Body, and Closing while generating the mail.
+    """),
+    
+    MessagesPlaceholder(variable_name="history"),
     ("user", "{user_input}")
 ])
 
-classification_runnable: Runnable = classification_template | llm_classification
+# using buffer Window memory to store last 4 chats
+memory_store = {}
 
-# prompt template for email generation along with its runnable sequence
-generation_template = ChatPromptTemplate.from_messages([
-    ("system",
-     "You are an intelligent email writer for non-native English speakers.\n"
-     "Use the provided classification JSON to generate a clear, concise, and professional email.\n"
-     "- Include a Subject line.\n"
-     "- Use greeting, body, and closing.\n"
-     "- Fill in placeholders [Date], [Recipient Name]."
-    ),
-    ("user", "{classification_json}")
-])
+def get_session_memory(session_id: str):
+    if session_id not in memory_store:
+        memory_store[session_id] = ConversationBufferWindowMemory(
+            memory_key="history",
+            return_messages=True,
+            k=4
+        )
+    return memory_store[session_id].chat_memory
 
-generation_runnable: Runnable = generation_template | llm_generative
+# creating a reactive agent to ask questions when needed
+agent = RunnableWithMessageHistory(
+    runnable=email_prompt | llm,
+    get_session_history=get_session_memory,
+    input_messages_key="user_input",
+    history_messages_key="history"
+)
 
+# cli code block
 if __name__ == "__main__":
-    prompt_text = input("Enter your informal email prompt: ")
+    print("\nEmail Assistant Ready.\n")
+    # using a specific session id
+    session_id = "email-session"
 
-    # classification
-    cls_resp = classification_runnable.invoke({"user_input": prompt_text})
-    classification_json = cls_resp.content
-    print("\nClassification JSON:", classification_json)
+    while True:
+        user_input = input("You: ").strip()
+        # exits the convo if typed either "exit" or "quit"
+        if user_input.lower() in {"exit", "quit"}:
+            print("Goodbye!")
+            break
 
-    # generation
-    gen_resp = generation_runnable.invoke({"classification_json": classification_json})
-    final_email = gen_resp.content
+        response = agent.invoke(
+            {"user_input": user_input},
+            config=RunnableConfig(configurable={"session_id": session_id})
+        )
 
-    print("\nGenerated Email:\n")
-    print(final_email)
+        print(f"\nAI : {response.content}\n")
