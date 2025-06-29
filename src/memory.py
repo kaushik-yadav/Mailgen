@@ -1,13 +1,13 @@
-from langchain.memory import ConversationBufferWindowMemory
+import os
 
-memory_store = {}
+from langchain_community.chat_message_histories import SQLChatMessageHistory
 
-# creating a per session memory with last 4 chat storage
+# Build safe absolute DB path
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.abspath(os.path.join(BASE_DIR, "..", "chat_history.db"))
+
 def get_session_memory(session_id: str):
-    if session_id not in memory_store:
-        memory_store[session_id] = ConversationBufferWindowMemory(
-            memory_key = "history",
-            return_messages = True,
-            k = 6
-        )
-    return memory_store[session_id].chat_memory
+    return SQLChatMessageHistory(
+        session_id=session_id,
+        connection=f"sqlite:///{DB_PATH}"  # ✅ use `connection`, not deprecated `connection_string`
+    )
