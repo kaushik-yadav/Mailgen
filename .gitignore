@@ -2,4 +2,4 @@ __pycache__
 /venv
 .env
 chat_history.db
-users.db
+users.json
